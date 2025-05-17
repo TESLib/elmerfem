@@ -656,7 +656,8 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
               CalcFluxLogical, CoilBody, PreComputedElectricPot, ImposeCircuitCurrent, &
               ItoJCoeffFound, ImposeBodyForceCurrent, HasVelocity, HasAngularVelocity, &
               HasLorenzVelocity, HaveAirGap, UseElementalNF, HasTensorReluctivity, &
-              ImposeBodyForcePotential, JouleHeatingFromCurrent, HasZirka, DoAve, HomogenizationModel
+              ImposeBodyForcePotential, JouleHeatingFromCurrent, HasZirka, DoAve, &
+              HomogenizationModel, CalculateFluxLinkage
    LOGICAL :: PiolaVersion, ElementalFields, NodalFields, RealField, pRef
    LOGICAL :: CSymmetry, HasHBCurve, LorentzConductivity, HasThinLines=.FALSE., NewMaterial
    
@@ -672,6 +673,7 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
    TYPE(Mesh_t), POINTER :: Mesh
    REAL(KIND=dp), ALLOCATABLE, TARGET :: Gforce(:,:), MASS(:,:), FORCE(:,:)
    REAL(KIND=dp), ALLOCATABLE :: BodyLoss(:,:), RotM(:,:,:), Torque(:)
+   REAL(KIND=dp), ALLOCATABLE :: ComponentFluxLinkage(:,:)
 
    REAL(KIND=dp), ALLOCATABLE :: ThinLineCrossect(:),ThinLineCond(:),SheetThickness(:)
 
@@ -996,6 +998,14 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
      ALLOCATE( BodyLoss(3,Model % NumberOfBodies) )
      BodyLoss = 0.0_dp
      TotalLoss = 0._dp
+   END IF
+
+   CalculateFluxLinkage = ListGetLogical( SolverParams,'Calculate Flux Linkage', Found )
+   IF (CalculateFluxLinkage) THEN
+     IF (.NOT. ((ASSOCIATED(VP).OR.ASSOCIATED(EL_VP)).AND.(ASSOCIATED(CD).OR.ASSOCIATED(EL_CD)))) &
+       CALL Warn('CalcFields','Calculate Flux Linkage requested but Vector Potential and/or Current Density missing!')
+     ALLOCATE( ComponentFluxLinkage(2,Model % NumberOfComponents) )
+     ComponentFluxLinkage = 0.0_dp
    END IF
 
    HomogenizationLoss = ASSOCIATED(PL) .OR. ASSOCIATED(EL_PL)
@@ -1894,6 +1904,25 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
            END IF
          END IF
 
+         IF ( CalculateFluxLinkage ) THEN
+           BLOCK
+             INTEGER :: CompId
+             CompId = GetComponentId(Element)
+             IF (Vdofs == 1) THEN
+               ComponentFluxLinkage(1,CompId)=ComponentFluxLinkage(1,CompId)+s*SUM(JatIP(1,1:3)*VP_ip(1,1:3))
+             ELSE
+             BLOCK
+               COMPLEX(KIND=dp) :: curdens(3), vecpot(3), fluxlink
+               curdens(1:3) = JatIP(1,1:3) + im*JatIP(2,1:3)
+               vecpot(1:3) = VP_ip(1,1:3) + im*VP_ip(2,1:3)
+               fluxlink = sum(vecpot*conjg(curdens))
+               ComponentFluxLinkage(1,CompId)=ComponentFluxLinkage(1,CompId)+s*REAL(fluxlink)
+               ComponentFluxLinkage(2,CompId)=ComponentFluxLinkage(2,CompId)+s*AIMAG(fluxlink)
+             END BLOCK
+             END IF
+           END Block
+         END IF 
+
          IF ( ASSOCIATED(JXB).OR.ASSOCIATED(EL_JXB)) THEN
            IF (.NOT. ASSOCIATED(CD) .AND. .NOT. ASSOCIATED(EL_CD)) THEN
              CALL Warn(Caller, 'Cannot Calculate JxB since Current Density is not calculated!')
@@ -2586,6 +2615,13 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
          TotalLoss(j) = SUM( BodyLoss(j,:) )
        END DO
      END IF
+
+     IF (CalculateFluxLinkage) THEN
+       DO i=1,Model % NumberOfComponents
+         ComponentFluxLinkage(1,i) = ParallelReduction(ComponentFluxLinkage(1,i)) / NoSlices
+         ComponentFluxLinkage(2,i) = ParallelReduction(ComponentFluxLinkage(2,i)) / NoSlices
+       END DO
+     END IF
    END IF
 
    IF( HbIntegProblem ) THEN
@@ -2689,6 +2725,18 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
      END IF
 
      DEALLOCATE( BodyLoss )      
+   END IF
+
+   IF (CalculateFluxLinkage) THEN
+     DO j=1,Model % NumberOfComponents
+       IF( vdofs == 1 ) THEN
+         CALL ListAddConstReal( CompParams,'res: Component '//i2s(j)//' Flux Linkage',ComponentFluxLinkage(1,j) )
+       ELSE
+         CALL ListAddConstReal( CompParams,'res: Component '//i2s(j)//' Flux Linkage Re',ComponentFluxLinkage(1,j) )
+         CALL ListAddConstReal( CompParams,'res: Component '//i2s(j)//' Flux Linkage Im',ComponentFluxLinkage(2,j) )
+       END IF
+     END DO
+     DEALLOCATE( ComponentFluxLinkage )
    END IF
 
    IF (GetLogical(SolverParams,'Show Angular Frequency',Found)) THEN
