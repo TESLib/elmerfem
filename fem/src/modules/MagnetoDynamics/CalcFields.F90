@@ -2729,11 +2729,12 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
 
    IF (CalculateFluxLinkage) THEN
      DO j=1,Model % NumberOfComponents
+       CompParams => Model % Components(j) % Values
        IF( vdofs == 1 ) THEN
-         CALL ListAddConstReal( CompParams,'res: Component '//i2s(j)//' Flux Linkage',ComponentFluxLinkage(1,j) )
+         CALL ListAddConstReal( CompParams,'res: Flux Linkage',ComponentFluxLinkage(1,j) )
        ELSE
-         CALL ListAddConstReal( CompParams,'res: Component '//i2s(j)//' Flux Linkage Re',ComponentFluxLinkage(1,j) )
-         CALL ListAddConstReal( CompParams,'res: Component '//i2s(j)//' Flux Linkage Im',ComponentFluxLinkage(2,j) )
+         CALL ListAddConstReal( CompParams,'res: Flux Linkage Re',ComponentFluxLinkage(1,j) )
+         CALL ListAddConstReal( CompParams,'res: Flux Linkage Im',ComponentFluxLinkage(2,j) )
        END IF
      END DO
      DEALLOCATE( ComponentFluxLinkage )
