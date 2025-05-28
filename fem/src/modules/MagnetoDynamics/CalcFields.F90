@@ -693,8 +693,11 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
    LOGICAL, SAVE :: ConstantMassMatrixInUse = .FALSE.
    LOGICAL :: Parallel, Erroneous
    LOGICAL :: CoilUseWvec, WvecInitHandle=.TRUE.
+   LOGICAL :: FluxLinkUseCur, FLCurInitHandle=.TRUE.
    CHARACTER(LEN=MAX_NAME_LEN) :: CoilWVecVarname
+   CHARACTER(LEN=MAX_NAME_LEN) :: FluxLinkCurName
    TYPE(VariableHandle_t), SAVE :: Wvec_h
+   TYPE(VariableHandle_t), SAVE :: FLCur_h
    INTEGER, POINTER, SAVE :: SetPerm(:) => NULL()
    LOGICAL :: LayerBC, CircuitDrivenBC
    REAL(KIND=dp) :: SurfPower
@@ -1001,11 +1004,18 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
    END IF
 
    CalculateFluxLinkage = ListGetLogical( SolverParams,'Calculate Flux Linkage', Found )
+   FluxLinkUseCur=.FALSE.
    IF (CalculateFluxLinkage) THEN
      IF (.NOT. ((ASSOCIATED(VP).OR.ASSOCIATED(EL_VP)).AND.(ASSOCIATED(CD).OR.ASSOCIATED(EL_CD)))) &
        CALL Warn('CalcFields','Calculate Flux Linkage requested but Vector Potential and/or Current Density missing!')
      ALLOCATE( ComponentFluxLinkage(2,Model % NumberOfComponents) )
      ComponentFluxLinkage = 0.0_dp
+
+     FluxLinkCurName = GetString(SolverParams, 'Flux Linkage Current Name', FluxLinkUseCur)
+     IF ( FluxLinkUseCur ) THEN
+       IF ( FLCurInitHandle ) CALL ListInitElementVariable( FLCur_h, FluxLinkCurName )
+       FLCurInitHandle=.FALSE.
+     END IF
    END IF
 
    HomogenizationLoss = ASSOCIATED(PL) .OR. ASSOCIATED(EL_PL)
@@ -1904,24 +1914,39 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
            END IF
          END IF
 
-         IF ( CalculateFluxLinkage ) THEN
-           BLOCK
-             INTEGER :: CompId
-             CompId = GetComponentId(Element)
-             IF (Vdofs == 1) THEN
-               ComponentFluxLinkage(1,CompId)=ComponentFluxLinkage(1,CompId)+s*SUM(JatIP(1,1:3)*VP_ip(1,1:3))
-             ELSE
+         CompParams => GetComponentParams( Element )
+         IF (ASSOCIATED(CompParams)) THEN
+           IF ( CalculateFluxLinkage ) THEN
              BLOCK
-               COMPLEX(KIND=dp) :: curdens(3), vecpot(3), fluxlink
-               curdens(1:3) = JatIP(1,1:3) + im*JatIP(2,1:3)
-               vecpot(1:3) = VP_ip(1,1:3) + im*VP_ip(2,1:3)
-               fluxlink = sum(vecpot*conjg(curdens))
-               ComponentFluxLinkage(1,CompId)=ComponentFluxLinkage(1,CompId)+s*REAL(fluxlink)
-               ComponentFluxLinkage(2,CompId)=ComponentFluxLinkage(2,CompId)+s*AIMAG(fluxlink)
-             END BLOCK
-             END IF
-           END Block
-         END IF 
+               INTEGER :: CompId
+               REAL :: virtual_current(3)
+               COMPLEX(KIND=dp) :: curdens(3)
+               LOGICAL :: UseVirtualCurrent
+               use_virtual_current: IF (FluxLinkUseCur) THEN
+                 virtual_current(1:3) = ListGetElementVectorSolution( FLCur_h, Basis, Element, dofs = dim ) 
+                 if (sum(virtual_current)>0._dp) THEN
+                   curdens(1:3) = virtual_current(1:3)
+                 else
+                   curdens(1:3) = JatIP(1,1:3) + im*JatIP(2,1:3)
+                 end if
+               ELSE
+                 curdens(1:3) = JatIP(1,1:3) + im*JatIP(2,1:3)
+               END IF use_virtual_current
+               CompId = GetComponentId(Element)
+               IF (Vdofs == 1) THEN
+                 ComponentFluxLinkage(1,CompId)=ComponentFluxLinkage(1,CompId)+s*SUM(curdens(1:3)*VP_ip(1,1:3))
+               ELSE
+               BLOCK
+                 COMPLEX(KIND=dp) :: vecpot(3), fluxlink
+                 vecpot(1:3) = VP_ip(1,1:3) + im*VP_ip(2,1:3)
+                 fluxlink = sum(vecpot*conjg(curdens))
+                 ComponentFluxLinkage(1,CompId)=ComponentFluxLinkage(1,CompId)+s*REAL(fluxlink)
+                 ComponentFluxLinkage(2,CompId)=ComponentFluxLinkage(2,CompId)+s*AIMAG(fluxlink)
+               END BLOCK
+               END IF
+             END Block
+           END IF 
+         END IF
 
          IF ( ASSOCIATED(JXB).OR.ASSOCIATED(EL_JXB)) THEN
            IF (.NOT. ASSOCIATED(CD) .AND. .NOT. ASSOCIATED(EL_CD)) THEN
